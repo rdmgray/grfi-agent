@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import './App.css';
 import ChatInterface from './components/ChatInterface';
 import Header from './components/Header';
