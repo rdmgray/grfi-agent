@@ -3,42 +3,157 @@ GRFI Agent Backend - Sustainability and Impact Data Gathering Agent
 Uses Google's Agent Development Kit (ADK) and Gemini model
 """
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
+
+# Load environment variables FIRST
+load_dotenv()
+
+# Configure environment for ADK BEFORE imports
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
 # Disable SSL verification for gRPC in development
-os.environ['GRPC_DEFAULT_SSL_ROOTS_FILE_PATH'] = ''
-os.environ['GRPC_ENABLE_FORK_SUPPORT'] = '0'
+os.environ["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] = ""
+os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-# Load environment variables
-load_dotenv()
+# Now import ADK modules
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from google.adk.agents import LlmAgent
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+from google.adk.tools import google_search, AgentTool
+from openfigi_client import OpenFigiClient
+import json
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
 
-# Configure Gemini API
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Define system instructions for the agents
+SEARCH_AGENT_INSTRUCTION = """You are a search assistant that performs web searches to gather information.
+When asked to search for information, use the google_search tool to find relevant results."""
 
-# Initialize Gemini model
-model = genai.GenerativeModel('gemini-pro')
+MAIN_AGENT_INSTRUCTION = """You are a specialized AI agent designed to provide information on
+investment instruments. You will be asked for information on a particular security.
+Give as much information as you can and include an assessment of the *impact* of buying
+this security.
+
+You should:
+1. Use openfigi_search to find metadata for a particular security, including details like ticker symbols, ISINs, security type, and other identifying information.
+2. Use search_web to gather additional information about the security from the web.
+"""
+
+# Initialize OpenFIGI client
+openfigi_client = OpenFigiClient()
 
 
-@app.route('/api/health', methods=['GET'])
+# Define tool functions for the agent
+def openfigi_search(query: str) -> dict:
+    """
+    Search for financial instruments using OpenFIGI API.
+
+    Use this tool to search for securities, stocks, bonds, or other financial instruments.
+    The query parameter should be a search term like a company name, ticker symbol, or ISIN.
+
+    Args:
+        query: The search term to look up (e.g., company name, ticker, ISIN)
+
+    Returns:
+        Dictionary with status and fee information.
+        Success: {"status": "success", "search_result": ...}
+        Error: {"status": "error", "error_message": ...}
+
+    """
+    try:
+        request_data = {"query": query}
+        # Parse the JSON string returned by the client
+        result_json = openfigi_client.search_request(request_data)
+        result_data = json.loads(result_json)
+        return {
+            "status": "success",
+            "search_result": result_data
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": str(e)
+        }
+
+
+def openfigi_mapping(id_type: str, id_value: str, exchange_code: str = None) -> dict:
+    """
+    Map financial instrument identifiers using OpenFIGI API.
+
+    Use this tool to convert between different types of financial identifiers (e.g., ISIN to FIGI,
+    ticker to FIGI, CUSIP to FIGI). This is useful for standardizing instrument identification.
+
+    Args:
+        id_type: The type of identifier (e.g., "ID_ISIN", "TICKER", "ID_CUSIP", "ID_SEDOL")
+        id_value: The actual identifier value
+        exchange_code: Optional exchange code to narrow down results (e.g., "US" for US markets)
+
+    Returns:
+        Dictionary with status and mapping information.
+        Success: {"status": "success", "mapping_result": ...}
+        Error: {"status": "error", "error_message": ...}
+    """
+    try:
+        request_data = {"idType": id_type, "idValue": id_value}
+        if exchange_code:
+            request_data["exchCode"] = exchange_code
+
+        # The mapping endpoint expects a list of requests
+        # Parse the JSON string returned by the client
+        result_json = openfigi_client.mapping_request([request_data])
+        result_data = json.loads(result_json)
+        return {
+            "status": "success",
+            "mapping_result": result_data
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": str(e)
+        }
+
+
+# Initialize LlmAgent and InMemoryRunner
+agent = None
+runner = None
+
+if GOOGLE_API_KEY:
+    # Create a separate search agent with google_search built-in tool
+    search_agent = LlmAgent(
+        name="search_agent",
+        model="gemini-2.5-flash-lite",
+        instruction=SEARCH_AGENT_INSTRUCTION,
+        tools=[google_search],
+    )
+
+    # Wrap the search agent in an AgentTool
+    search_agent_tool = AgentTool(
+        agent=search_agent
+    )
+
+    # Create main agent with custom tools and the search agent tool
+    agent = LlmAgent(
+        name="grfi_agent",
+        model="gemini-2.5-flash-lite",
+        instruction=MAIN_AGENT_INSTRUCTION,
+        tools=[openfigi_search, openfigi_mapping, search_agent_tool],
+    )
+    runner = InMemoryRunner(agent=agent, app_name="grfi_app")
+
+
+@app.route("/api/health", methods=["GET"])
 def health_check():
     """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'GRFI Agent Backend'
-    })
+    return jsonify({"status": "healthy", "service": "GRFI Agent Backend"})
 
 
-@app.route('/api/chat', methods=['POST'])
-def chat():
+@app.route("/api/chat", methods=["POST"])
+async def chat():
     """
     Chat endpoint for interacting with the AI agent
     Expects JSON: { "message": "user message" }
@@ -46,69 +161,74 @@ def chat():
     """
     try:
         data = request.json
-        user_message = data.get('message', '')
+        user_message = data.get("message", "")
 
         if not user_message:
-            return jsonify({'error': 'Message is required'}), 400
+            return jsonify({"error": "Message is required"}), 400
 
-        if not GEMINI_API_KEY:
-            return jsonify({
-                'response': 'Hello! I\'m the GRFI Sustainability Data Agent. (Note: Gemini API key not configured - running in demo mode)'
-            })
-
-        # Create a prompt with context about the agent's purpose
-        system_context = """You are a specialized AI agent designed to help gather and analyze
-sustainability and impact data on investment products. Your focus is on environmental,
-social, and governance (ESG) factors, impact investing metrics, and sustainable finance data.
-
-You can help users understand sustainability data sources and investment product information.
-"""
-
-        full_prompt = f"{system_context}\n\nUser: {user_message}\n\nAssistant:"
-
-        # Try to generate response using Gemini
-        try:
-            response = model.generate_content(full_prompt)
-            return jsonify({
-                'response': response.text
-            })
-        except Exception as gemini_error:
-            # If Gemini fails (e.g., SSL issues), provide a helpful demo response
-            error_msg = str(gemini_error)
-            if 'SSL' in error_msg or 'certificate' in error_msg.lower():
-                demo_responses = {
-                    'sustainability': 'Sustainability investing (also known as sustainable, socially responsible, or ESG investing) refers to investment strategies that consider environmental, social, and governance factors alongside financial returns. Key aspects include: carbon footprint analysis, renewable energy investments, social impact metrics, and corporate governance standards.',
-                    'esg': 'ESG stands for Environmental, Social, and Governance - three key factors used to measure the sustainability and ethical impact of investments. Environmental criteria examine how a company performs as a steward of nature. Social criteria examine how it manages relationships with employees, suppliers, customers, and communities. Governance deals with leadership, audits, internal controls, and shareholder rights.',
-                    'impact': 'Impact investing refers to investments made with the intention to generate positive, measurable social and environmental impact alongside a financial return. This differs from traditional investing by explicitly seeking to create beneficial outcomes, such as affordable housing, clean energy, or sustainable agriculture.',
-                    'default': f'I apologize, but I\'m currently running in demo mode due to SSL configuration issues in this environment. In production, I would use Google\'s Gemini AI to provide detailed insights about sustainability data for your query: "{user_message}". To enable full functionality, please configure SSL certificates properly or deploy in a production environment with valid certificates.'
+        if not runner:
+            return jsonify(
+                {
+                    "response": "Hello! I'm the GRFI Sustainability Data Agent. (Note: Google API key not configured - running in demo mode)"
                 }
+            )
 
-                # Simple keyword matching for demo responses
-                message_lower = user_message.lower()
-                if any(word in message_lower for word in ['sustainability', 'sustainable']):
-                    response_text = demo_responses['sustainability']
-                elif any(word in message_lower for word in ['esg', 'governance']):
-                    response_text = demo_responses['esg']
-                elif any(word in message_lower for word in ['impact', 'investing']):
-                    response_text = demo_responses['impact']
-                else:
-                    response_text = demo_responses['default']
+        # Run the agent with the user message using InMemoryRunner
+        try:
+            # Create a session if it doesn't exist
+            session_service = runner.session_service
+            user_id = "default_user"
+            session_id = "default_session"
 
-                return jsonify({
-                    'response': response_text,
-                    'mode': 'demo',
-                    'note': 'Running in demo mode due to SSL certificate issues. Deploy with valid SSL certificates for full AI capabilities.'
-                })
+            try:
+                await session_service.create_session(
+                    app_name=runner.app_name, user_id=user_id, session_id=session_id
+                )
+            except Exception:
+                # Session might already exist, that's okay
+                pass
+
+            # Create Content object for the user message
+            user_content = types.Content(
+                role="user", parts=[types.Part(text=user_message)]
+            )
+
+            # Run the agent and collect the final response
+            final_response = None
+            async for event in runner.run_async(
+                user_id=user_id, session_id=session_id, new_message=user_content
+            ):
+                if event.is_final_response() and event.content:
+                    final_response = event.content.parts[0].text
+                    break
+
+            if final_response:
+                return jsonify({"response": final_response})
             else:
-                raise gemini_error
+                return jsonify({"response": "No response generated."})
+        except Exception as agent_error:
+            return (
+                jsonify(
+                    {
+                        "error": str(agent_error),
+                        "response": "Sorry, I encountered an error processing your request.",
+                    }
+                ),
+                500,
+            )
 
     except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'response': 'Sorry, I encountered an error processing your request.'
-        }), 500
+        return (
+            jsonify(
+                {
+                    "error": str(e),
+                    "response": "Sorry, I encountered an error processing your request.",
+                }
+            ),
+            500,
+        )
 
 
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)

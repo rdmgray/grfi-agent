@@ -37,12 +37,12 @@
 }
 
 .messages-container::-webkit-scrollbar-thumb {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #86efac 0%, #a855f7 100%);
   border-radius: 10px;
 }
 
 .messages-container::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(135deg, #5568d3 0%, #65408b 100%);
+  background: linear-gradient(135deg, #6ee7b7 0%, #9333ea 100%);
 }
 
 .loading-indicator {
@@ -64,7 +64,7 @@
 .typing-dots span {
   width: 8px;
   height: 8px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #86efac 0%, #a855f7 100%);
   border-radius: 50%;
   animation: typing 1.4s infinite;
 }

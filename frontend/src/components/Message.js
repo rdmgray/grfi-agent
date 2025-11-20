@@ -16,7 +16,7 @@ const Message = ({ message }) => {
       <div className="message-content">
         {type === 'agent' && (
           <div className="message-avatar">
-            <span className="avatar-icon">🤖</span>
+            <img src="/images/liana_logo.svg" alt="Liana" className="avatar-icon" />
           </div>
         )}
         <div className="message-bubble">

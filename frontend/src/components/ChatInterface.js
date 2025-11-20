@@ -8,7 +8,7 @@ const ChatInterface = () => {
   const [messages, setMessages] = useState([
     {
       type: 'agent',
-      text: 'Hello! I\'m your GRFI Sustainability Data Agent. I can help you gather and analyze sustainability and impact data on investment products. How can I assist you today?',
+      text: 'Hello! I\'m Liana, your Sustainability & Impact Data Assistant. Which security are you interested in finding out about? Provide the name or a code (ISIN, SEDOL etc).',
       timestamp: new Date()
     }
   ]);

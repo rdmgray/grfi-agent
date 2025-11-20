@@ -6,9 +6,11 @@ const Header = () => {
     <header className="header">
       <div className="header-content">
         <div className="logo-section">
-          <div className="logo-icon">🌱</div>
+          <div className="logo-icon">
+            <img src="/images/liana_logo.svg" alt="Liana Logo" />
+          </div>
           <div className="logo-text">
-            <h1>GRFI Agent</h1>
+            <h1>Liana</h1>
             <p className="subtitle">Sustainability & Impact Data Intelligence</p>
           </div>
         </div>
